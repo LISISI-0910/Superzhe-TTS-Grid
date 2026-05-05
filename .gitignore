@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# 临时生成的 Opus 测试文件
+*.opus
+*.wav
+*.mp3
+
+# 密钥/证书（绝对不要提交！）
+private_key.pem
+
+# 大模型文件（仓库只存代码，不存模型权重）
+pretrained_models/
+third_party/
+
+# 环境/编辑器
+.venv/
+venv/
+.vscode/
+.idea/
+
+# 系统文件
+Thumbs.db
+.DS_Store
