@@ -13,7 +13,6 @@ private_key.pem
 
 # 大模型文件（仓库只存代码，不存模型权重）
 pretrained_models/
-third_party/
 
 # 环境/编辑器
 .venv/
