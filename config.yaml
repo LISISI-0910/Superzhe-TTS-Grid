@@ -1,0 +1,34 @@
+# CosyVoice3 TTS + ASR 服务配置
+# 环境变量同名覆盖（例: export TTS_HOST=127.0.0.1）
+
+server:
+  host: "0.0.0.0"
+  port: 6006
+
+models:
+  tts_dir: "pretrained_models/Fun-CosyVoice3-0.5B"
+  asr_dir: "faster-whisper-large-v3-turbo-ct2"
+
+acceleration:
+  trt: true       # TensorRT 加速
+  vllm: true      # vLLM 推理引擎
+  fp16: true      # FP16 半精度
+
+limits:
+  tts_text_max: 20000        # TTS 合成文本最大字数
+  prompt_text_max: 1000      # 参考文本最大字数
+  instruct_text_max: 500     # 指令文本最大字数
+  audio_size_max_mb: 50      # 上传音频最大 MB
+  audio_duration_max_s: 30   # 提取说话人音频最大秒数
+
+generation:
+  hard_timeout_s: 3600       # 单次生成硬超时（秒）
+  idle_timeout_s: 120        # 无产出空闲超时（秒）
+
+asr:
+  concurrency: 2             # ASR 默认并发上限
+
+benchmark:
+  warmup_rounds: 2           # 预热轮数
+  coarse_rounds: 2           # 指数探测每级轮数
+  fine_rounds: 3             # 二分搜索每级轮数

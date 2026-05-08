@@ -1,234 +1,243 @@
 #!/usr/bin/env python3
 """
-CosyVoice3 模型 & ttsfrd 资源下载脚本（Windows / Linux / macOS 通用）
-============================================================
+CosyVoice3 TTS + ASR 一键部署脚本
+=================================
 
-功能：
-  1. 自动安装缺失的 Python 依赖
-  2. 从 ModelScope 下载 CosyVoice3 模型
-  3. 从 ModelScope 下载 ttsfrd 资源并解压
-
-用法：
-  python setup.py                        # 完整安装
-  python setup.py --no-deps              # 跳过 pip install
-  python setup.py --model-dir PATH       # 自定义模型目录
+用法:
+  python setup.py                              # 完整部署（下载模型 + 安装依赖）
+  python setup.py --skip-deps                  # 跳过系统依赖和 pip install
+  python setup.py --model-dir ./my_models      # 自定义模型目录
+  python setup.py --no-tts-model               # 跳过 TTS 模型下载
+  python setup.py --no-asr-model               # 跳过 ASR 模型下载
+  python setup.py --help
 """
-
 import argparse
 import os
 import sys
-import zipfile
 import subprocess
 import platform
+import zipfile
 
-# ─── 路径 ──────────────────────────────────────────
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(SCRIPT_DIR, "pretrained_models", "Fun-CosyVoice3-0.5B")
-TTSFRD_DIR = os.path.join(SCRIPT_DIR, "pretrained_models", "CosyVoice-ttsfrd")
-MODEL_FLAG = os.path.join(MODEL_DIR, "llm.pt")
-TTSFRD_FLAG = os.path.join(TTSFRD_DIR, "resource")  # 解压后的目录
+TTS_MODEL_DIR_DEFAULT = os.path.join(SCRIPT_DIR, "pretrained_models", "Fun-CosyVoice3-0.5B")
+TTSFRD_DIR_DEFAULT = os.path.join(SCRIPT_DIR, "pretrained_models", "CosyVoice-ttsfrd")
+ASR_MODEL_DIR_DEFAULT = os.path.join(SCRIPT_DIR, "faster-whisper-large-v3-turbo-ct2")
 
 
-def info(msg):
-    print(f"  [INFO] {msg}")
+# ══════════════════════════════════════════════════════════
+#  Helpers
+# ══════════════════════════════════════════════════════════
+
+def ok(msg):    print(f"  ✓ {msg}")
+def info(msg):  print(f"  → {msg}")
+def warn(msg):  print(f"  ⚠ {msg}")
+def fail(msg):  print(f"  ✗ {msg}"); sys.exit(1)
 
 
-def ok(msg):
-    print(f"  [ OK] {msg}")
+def run(cmd, desc=""):
+    """执行 shell 命令，打印并检查返回码。"""
+    if desc:
+        info(desc)
+    print(f"     $ {cmd}")
+    try:
+        subprocess.check_call(cmd, shell=True, cwd=SCRIPT_DIR)
+    except subprocess.CalledProcessError:
+        fail(f"命令失败: {cmd}")
 
 
-def warn(msg):
-    print(f"  [WARN] {msg}")
+def pip_install(packages, index_url=None):
+    """pip install 封装，支持镜像源。"""
+    cmd = f"{sys.executable} -m pip install {packages}"
+    if index_url:
+        cmd += f" -i {index_url} --trusted-host={index_url.split('://')[1].split('/')[0]}"
+    run(cmd, f"安装 {packages}")
 
 
-def fail(msg):
-    print(f"  [FAIL] {msg}")
-    sys.exit(1)
+# ══════════════════════════════════════════════════════════
+#  Step 1: 系统依赖（仅 Linux）
+# ══════════════════════════════════════════════════════════
+
+def install_system_deps():
+    if platform.system() != "Linux":
+        info("非 Linux，跳过系统依赖安装")
+        return
+    run("sudo apt-get update", "更新 apt 源")
+    run("sudo apt-get install -y sox libsox-dev", "安装 sox")
 
 
-# ═══════════════════════════════════════════════════
-#  1. 依赖安装
-# ═══════════════════════════════════════════════════
-def install_deps():
-    """自动安装必要的 Python 包"""
-    needed = []
+# ══════════════════════════════════════════════════════════
+#  Step 2-3: Python 依赖
+# ══════════════════════════════════════════════════════════
+
+def install_python_deps():
+    # Step 2: requirements.txt
+    req_path = os.path.join(SCRIPT_DIR, "requirements.txt")
+    if os.path.exists(req_path):
+        pip_install(f"-r {req_path}")
+    else:
+        warn("未找到 requirements.txt，跳过")
+
+    # Step 3: 特定版本（阿里云镜像）
+    pip_install(
+        "vllm==0.11.0 transformers==4.57.1 numpy==1.26.4",
+        index_url="https://mirrors.aliyun.com/pypi/simple/",
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  Step 4: 下载模型
+# ══════════════════════════════════════════════════════════
+
+def download_tts_model(target_dir: str):
+    """从 ModelScope 下载 CosyVoice3 模型。"""
+    flag = os.path.join(target_dir, "llm.pt")
+    if os.path.exists(flag):
+        ok(f"TTS 模型已存在: {target_dir}")
+        return
+
+    from modelscope import snapshot_download
+    info(f"下载 CosyVoice3 模型 → {target_dir}")
+    snapshot_download("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", local_dir=target_dir)
+    if os.path.exists(os.path.join(target_dir, "llm.pt")):
+        ok("TTS 模型下载完成")
+    else:
+        fail("TTS 模型下载失败")
+
+
+def download_asr_model(target_dir: str):
+    """从 HuggingFace 下载 faster-whisper CTranslate2 模型。"""
+    flag = os.path.join(target_dir, "model.bin")
+    if os.path.exists(flag):
+        ok(f"ASR 模型已存在: {target_dir}")
+        return
 
     try:
-        import modelscope  # noqa
+        from huggingface_hub import snapshot_download
+        info(f"下载 ASR 模型 → {target_dir}")
+        snapshot_download(
+            "deepdml/faster-whisper-large-v3-turbo-ct2",
+            local_dir=target_dir,
+            local_dir_use_symlinks=False,
+        )
     except ImportError:
-        needed.append("modelscope")
-
-    if needed:
-        info(f"发现缺失依赖: {', '.join(needed)}，正在安装...")
+        # huggingface_hub 不可用时，用 modelscope 或 git clone 兜底
+        info("huggingface_hub 不可用，尝试 modelscope ...")
         try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install"] + needed
-            )
-            ok("依赖安装完成")
-        except subprocess.CalledProcessError as e:
-            fail(f"pip install 失败: {e}")
+            from modelscope import snapshot_download as ms_snapshot
+            ms_snapshot("deepdml/faster-whisper-large-v3-turbo-ct2", local_dir=target_dir)
+        except Exception:
+            repo = "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2"
+            info(f"使用 git clone: {repo}")
+            if os.path.exists(target_dir):
+                import shutil
+                shutil.rmtree(target_dir)
+            run(f"git clone {repo} {target_dir}", "git clone ASR 模型")
+
+    if os.path.exists(os.path.join(target_dir, "model.bin")):
+        ok("ASR 模型下载完成")
     else:
-        ok("所有依赖已就绪")
+        fail("ASR 模型下载失败")
 
 
-# ═══════════════════════════════════════════════════
-#  2. 下载模型
-# ═══════════════════════════════════════════════════
-def download_model(model_dir: str):
-    from modelscope import snapshot_download
-
-    if os.path.exists(os.path.join(model_dir, "llm.pt")):
-        ok(f"模型已存在，跳过下载: {model_dir}")
-        return
-
-    info(f"正在下载 CosyVoice3 模型...")
-    info(f"  本地路径: {model_dir}")
-    snapshot_download("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", local_dir=model_dir)
-
-    if os.path.exists(os.path.join(model_dir, "llm.pt")):
-        ok("模型下载完成")
+def install_ttsfrd(target_dir: str):
+    """下载 ttsfrd 资源 + Linux wheel 安装。"""
+    resource_dir = os.path.join(target_dir, "resource")
+    if os.path.isdir(resource_dir) and os.listdir(resource_dir):
+        ok(f"ttsfrd 资源已存在: {resource_dir}")
     else:
-        fail("模型下载失败，请检查网络或手动下载")
+        from modelscope import snapshot_download
+        info(f"下载 ttsfrd → {target_dir}")
+        snapshot_download("iic/CosyVoice-ttsfrd", local_dir=target_dir)
 
+        # 解压 resource.zip
+        zip_path = os.path.join(target_dir, "resource.zip")
+        if os.path.exists(zip_path):
+            info("解压 resource.zip ...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(target_dir)
+            ok("解压完成")
 
-# ═══════════════════════════════════════════════════
-#  3. 下载 ttsfrd
-# ═══════════════════════════════════════════════════
-def download_ttsfrd(ttsfrd_dir: str):
-    from modelscope import snapshot_download
-
-    resource_dir = os.path.join(ttsfrd_dir, "resource")
-    if os.path.exists(resource_dir) and os.listdir(resource_dir):
-        ok(f"ttsfrd 资源已存在，跳过下载: {resource_dir}")
-        return
-
-    info("正在下载 ttsfrd 资源...")
-    info(f"  本地路径: {ttsfrd_dir}")
-    snapshot_download("iic/CosyVoice-ttsfrd", local_dir=ttsfrd_dir)
-
-    # 解压 resource.zip
-    resource_zip = os.path.join(ttsfrd_dir, "resource.zip")
-    if os.path.exists(resource_zip) and not os.path.exists(resource_dir):
-        info("正在解压 resource.zip...")
-        with zipfile.ZipFile(resource_zip, "r") as zf:
-            zf.extractall(ttsfrd_dir)
-        ok("解压完成")
-    elif os.path.exists(resource_dir):
-        ok("resource 已就绪")
-    else:
-        warn("未找到 resource.zip，请检查下载是否完整")
-
-
-# ═══════════════════════════════════════════════════
-#  4. 安装 ttsfrd wheel（Linux 专用）
-# ═══════════════════════════════════════════════════
-def install_ttsfrd_wheel(ttsfrd_dir: str):
-    """安装 ttsfrd 的 .whl 包（仅 Linux，Windows 没有预编译包）"""
+    # Linux wheel 安装
     if platform.system() != "Linux":
-        info("非 Linux 系统，跳过 ttsfrd wheel 安装")
+        info("非 Linux，跳过 ttsfrd wheel")
         return
 
-    # 找到匹配当前 Python 版本的 wheel
     py_ver = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    for fname in os.listdir(ttsfrd_dir):
+    for fname in sorted(os.listdir(target_dir)):
         if fname.endswith(".whl") and py_ver in fname and "linux" in fname:
-            wheel_path = os.path.join(ttsfrd_dir, fname)
             info(f"安装 ttsfrd wheel: {fname}")
             try:
                 subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", wheel_path]
-                )
-                ok("ttsfrd 安装完成")
-            except subprocess.CalledProcessError as e:
-                warn(f"ttsfrd 安装失败（可忽略，不影响核心功能）: {e}")
-            return
-
-    # 没找到匹配的 wheel，尝试任意 cp310 版本
-    for fname in os.listdir(ttsfrd_dir):
-        if fname.endswith(".whl") and "linux" in fname:
-            wheel_path = os.path.join(ttsfrd_dir, fname)
-            info(f"尝试安装 ttsfrd wheel（版本可能不匹配）: {fname}")
-            try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", wheel_path]
-                )
-                return
+                    [sys.executable, "-m", "pip", "install", os.path.join(target_dir, fname)])
+                ok("ttsfrd wheel 安装完成")
             except subprocess.CalledProcessError:
-                pass
+                warn("ttsfrd wheel 安装失败（不影响核心功能）")
+            return
+    warn("未找到匹配的 ttsfrd wheel（不影响核心功能）")
 
-    info("未找到匹配的 ttsfrd wheel，跳过（引擎运行不依赖此包）")
 
-
-# ═══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════
 #  Main
-# ═══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="CosyVoice3 模型 & ttsfrd 资源下载脚本（跨平台）"
-    )
-    parser.add_argument(
-        "--no-deps", action="store_true", help="跳过依赖安装"
-    )
-    parser.add_argument(
-        "--model-dir",
-        default=MODEL_DIR,
-        help=f"模型下载目录 (默认: {MODEL_DIR})",
-    )
-    parser.add_argument(
-        "--ttsfrd-dir",
-        default=TTSFRD_DIR,
-        help=f"ttsfrd 下载目录 (默认: {TTSFRD_DIR})",
-    )
+    parser = argparse.ArgumentParser(description="CosyVoice3 TTS + ASR 一键部署")
+    parser.add_argument("--skip-deps", action="store_true", help="跳过所有依赖安装")
+    parser.add_argument("--model-dir", default="",
+                        help="TTS 模型下载目录（默认 pretrained_models/Fun-CosyVoice3-0.5B）")
+    parser.add_argument("--ttsfrd-dir", default="",
+                        help="ttsfrd 资源目录（默认 pretrained_models/CosyVoice-ttsfrd）")
+    parser.add_argument("--asr-model-dir", default="",
+                        help="ASR 模型目录（默认 faster-whisper-large-v3-turbo-ct2）")
+    parser.add_argument("--no-tts-model", action="store_true", help="跳过 TTS 模型下载")
+    parser.add_argument("--no-asr-model", action="store_true", help="跳过 ASR 模型下载")
     args = parser.parse_args()
 
+    tts_dir = args.model_dir or TTS_MODEL_DIR_DEFAULT
+    ttsfrd_dir = args.ttsfrd_dir or TTSFRD_DIR_DEFAULT
+    asr_dir = args.asr_model_dir or ASR_MODEL_DIR_DEFAULT
+
     print()
     print("=" * 55)
-    print("  CosyVoice3 模型 & ttsfrd 资源下载")
-    print(f"  系统: {platform.system()} | Python: {sys.version_info.major}.{sys.version_info.minor}")
+    print("  CosyVoice3 TTS + ASR 一键部署")
+    print(f"  系统: {platform.system()}  Python: {sys.version_info.major}.{sys.version_info.minor}")
     print("=" * 55)
     print()
 
-    # 1. 安装依赖
-    if not args.no_deps:
-        install_deps()
+    # ── 依赖 ──
+    if not args.skip_deps:
+        print("── [1/4] 系统依赖 ──")
+        install_system_deps()
+
+        print("\n── [2/4] Python 依赖 ──")
+        install_python_deps()
     else:
-        info("跳过依赖安装 (--no-deps)")
+        info("跳过依赖安装 (--skip-deps)")
 
-    print()
+    # ── 模型 ──
+    print("\n── [3/4] TTS 模型 + ttsfrd ──")
+    os.makedirs(tts_dir, exist_ok=True)
+    os.makedirs(ttsfrd_dir, exist_ok=True)
+    if not args.no_tts_model:
+        download_tts_model(tts_dir)
+    install_ttsfrd(ttsfrd_dir)
 
-    # 2. 下载模型
-    print("─" * 45)
-    print("  [1/3] 下载 CosyVoice3 模型")
-    print("─" * 45)
-    os.makedirs(args.model_dir, exist_ok=True)
-    download_model(args.model_dir)
+    print("\n── [4/4] ASR 模型 ──")
+    os.makedirs(asr_dir, exist_ok=True)
+    if not args.no_asr_model:
+        download_asr_model(asr_dir)
 
-    print()
-
-    # 3. 下载 ttsfrd
-    print("─" * 45)
-    print("  [2/3] 下载 ttsfrd 资源")
-    print("─" * 45)
-    os.makedirs(args.ttsfrd_dir, exist_ok=True)
-    download_ttsfrd(args.ttsfrd_dir)
-
-    print()
-
-    # 4. 安装 ttsfrd wheel（仅 Linux）
-    print("─" * 45)
-    print("  [3/3] 安装 ttsfrd（Linux 专用）")
-    print("─" * 45)
-    install_ttsfrd_wheel(args.ttsfrd_dir)
-
+    # ── 完成 ──
     print()
     print("=" * 55)
-    print("  全部完成！")
+    print("  部署完成！")
     print()
-    print("  启动引擎:")
-    print("    python run.py")
+    print("  启动服务:")
+    print("    python serve.py")
     print()
-    print("  或使用 Docker:")
-    print("    docker compose up -d --build")
+    print("  查看文档:")
+    print("    http://localhost:6006/docs")
     print("=" * 55)
     print()
 

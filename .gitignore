@@ -3,16 +3,17 @@ __pycache__/
 *.pyc
 *.pyo
 
-# 临时生成的 Opus 测试文件
-*.opus
-*.wav
-*.mp3
-
-# 密钥/证书（绝对不要提交！）
-private_key.pem
-
 # 大模型文件（仓库只存代码，不存模型权重）
 pretrained_models/
+faster-whisper-large-v3-turbo-ct2/
+
+# 临时音频 / 测试产物
+*.opus
+*.ogg
+test_outputs/
+
+# 密钥/证书
+private_key.pem
 
 # 环境/编辑器
 .venv/

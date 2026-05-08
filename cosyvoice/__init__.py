@@ -12,6 +12,5 @@ if os.path.isdir(_THIRD_PARTY) and _THIRD_PARTY not in sys.path:
 from cosyvoice.engine import CosyVoiceEngine
 from cosyvoice.model import CosyVoice3Model
 from cosyvoice.frontend import CosyVoiceFrontEnd
-from cosyvoice.client import CosyVoiceClient
 
-__all__ = ['CosyVoiceEngine', 'CosyVoice3Model', 'CosyVoiceFrontEnd', 'CosyVoiceClient']
+__all__ = ['CosyVoiceEngine', 'CosyVoice3Model', 'CosyVoiceFrontEnd']

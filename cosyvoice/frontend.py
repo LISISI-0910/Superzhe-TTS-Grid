@@ -31,6 +31,7 @@ import whisper
 import os
 import re
 import inflect
+import torchaudio.compliance.kaldi as kaldi
 from cosyvoice.utils.file_utils import logging, load_wav
 from cosyvoice.utils.frontend_utils import (
     contains_chinese, replace_blank, replace_corner_mark,
@@ -124,7 +125,6 @@ class CosyVoiceFrontEnd:
         return speech_token, speech_token_len
 
     def _extract_spk_embedding(self, prompt_wav):
-        import torchaudio.compliance.kaldi as kaldi
         speech = load_wav(prompt_wav, 16000)
         feat = kaldi.fbank(speech, num_mel_bins=80, dither=0, sample_frequency=16000)
         feat = feat - feat.mean(dim=0, keepdim=True)
@@ -183,38 +183,22 @@ class CosyVoiceFrontEnd:
     # ======================= Engine API =======================
 
     def extract_spk_vectors(self, prompt_text: str, prompt_wav, resample_rate: int = 24000):
-        """
-        提取说话人向量 — 用于 mode='extract'。
-        提取完毕不存入任何缓存，直接返回序列化友好的 dict。
-
-        返回:
-            {
-                'prompt_text_token':          List[int],        # (1, N)
-                'prompt_text_token_len':      int,
-                'llm_prompt_speech_token':    List[int],        # (1, N)
-                'llm_prompt_speech_token_len': int,
-                'flow_prompt_speech_token':   List[int],        # = 上面同一个
-                'flow_prompt_speech_token_len': int,
-                'prompt_speech_feat':         List[List[float]],  # (1, N, 80)
-                'prompt_speech_feat_len':     int,
-                'llm_embedding':              List[float],       # (1, 192)
-                'flow_embedding':             List[float],       # = 上面同一个
-            }
-        """
         prompt_text = self.text_normalize(prompt_text, split=False, text_frontend=True)
         prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text)
         speech_feat, speech_feat_len = self._extract_speech_feat(prompt_wav)
         speech_token, speech_token_len = self._extract_speech_token(prompt_wav)
-
-        # CV2/3: force speech_feat % speech_token = 2
         if resample_rate == 24000:
             token_len = min(int(speech_feat.shape[1] / 2), speech_token.shape[1])
             speech_feat = speech_feat[:, :2 * token_len]
             speech_feat_len = torch.tensor([2 * token_len], dtype=torch.int32).to(self.device)
             speech_token = speech_token[:, :token_len]
             speech_token_len = torch.tensor([token_len], dtype=torch.int32).to(self.device)
-
         embedding = self._extract_spk_embedding(prompt_wav)
+
+        # prompt_speech_feat 以原始二进制 bytes 返回
+        # 避免 JSON list-of-list 的冗余开销（~2.2MB → bytes 仅 448KB）
+        # engine.pack_spk_vec 中的 _deserialize_spk_vec 会通过 np.frombuffer 高效重建 tensor
+        feat_np = speech_feat.squeeze(0).cpu().numpy()
 
         return {
             'prompt_text_token': prompt_text_token.squeeze(0).cpu().tolist(),
@@ -223,32 +207,19 @@ class CosyVoiceFrontEnd:
             'llm_prompt_speech_token_len': speech_token_len.item(),
             'flow_prompt_speech_token': speech_token.squeeze(0).cpu().tolist(),
             'flow_prompt_speech_token_len': speech_token_len.item(),
-            'prompt_speech_feat': speech_feat.squeeze(0).cpu().tolist(),
+            'prompt_speech_feat': feat_np.tobytes(),            # bytes（原始 float32 二进制）
+            'prompt_speech_feat_shape': list(feat_np.shape),    # [1400, 80]
             'prompt_speech_feat_len': speech_feat_len.item(),
             'llm_embedding': embedding.squeeze(0).cpu().tolist(),
             'flow_embedding': embedding.squeeze(0).cpu().tolist(),
         }
 
     def build_model_input(self, tts_text: str, spk_vec: dict, mode: str = 'zero_shot'):
-        """
-        根据 mode 组装 model_input dict，给 model.tts() 用。
-
-        spk_vec: extract_spk_vectors() 返回的 dict（由后端传来且已反序列化为 tensor）
-
-        mode:
-          - 'zero_shot'      → 完整 prompt
-          - 'cross_lingual'  → 去掉 llm 侧的 prompt_text + speech_token
-          - 'instruct2'      → 去掉 llm 侧的 speech_token
-        """
-        # 规范化文本——和原始 inference_zero_shot 一致：
-        # text_normalize(tts_text, split=True) → 逐句 → _extract_text_token(每句)
-        # 引擎收到的是已拆分的单句，所以 split=False，但必须规范化
-        tts_text = self.text_normalize(tts_text, split=False, text_frontend=True)
+        #前端已经处理过了，这个没必要再处理一次。
+        # tts_text = self.text_normalize(tts_text, split=False, text_frontend=True)
         tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
-
         spk_vec = {k: v.clone().to(self.device) if isinstance(v, torch.Tensor) else v
                     for k, v in spk_vec.items()}
-
         model_input = {
             'text': tts_text_token,
             'text_len': tts_text_token_len,
